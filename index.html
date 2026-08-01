@@ -749,7 +749,7 @@
           <option value="range">China and surrounding areas (中国及周围地区)</option>
           <option value="world">World (世界)</option>
         </select>
-        <select id="queryType">
+          <select id="queryType" onchange="document.getElementById('queryDate').value = ''; filterAndRenderChips();">
           <option value="alliances">Alliances (联盟)</option>
           <option value="players">Players (玩家)</option>
         </select>
@@ -791,9 +791,14 @@
         class="secondary" data-i18n="btn_reset">Reset</button>
     </div>
 
-    <button class="home-btn" id="homeBtn" onclick="goHome()">
-      <span>← </span><span data-i18n="btn_home">回到主页</span>
-    </button>
+        <div style="display: flex; gap: 10px; margin-bottom: 16px;">
+      <button class="home-btn" id="homeBtn" onclick="goHome()">
+        <span>← </span><span data-i18n="btn_home">回到主页</span>
+      </button>
+      <button class="home-btn" id="wholeMapBtn" onclick="showWholeMap()" style="display: none; background: linear-gradient(135deg, #34C759 0%, #30B0C7 100%); box-shadow: 0 4px 15px rgba(52, 199, 89, 0.3);">
+        <span data-i18n="btn_whole_map">🌐 View Whole Map</span>
+      </button>
+    </div>
 
     <div class="list-container glass" id="listContainer">
       <div class="list-header">
@@ -817,12 +822,22 @@
     </div>
   </div>
 
-  <div id="map-view">
-    <div class="map-overlay glass">
-      <div class="map-title" id="mapTitle">Loading...</div>
-      <div class="map-stat" id="mapStats">Points: 0</div>
-      <button class="back-btn" onclick="hideMap()" data-i18n="btn_back">← Back to List</button>
-    </div>
+    <div id="map-view">
+        <div class="map-overlay glass">
+          <div class="map-title" id="mapTitle">Loading...</div>
+          <div class="map-stat" id="mapStats">Points: 0</div>
+          <div style="margin-top: 10px; font-size: 13px; color: var(--text-sub); display: flex; align-items: center; gap: 8px;">
+            <span data-i18n="radius_label">热力半径:</span>
+            <input type="range" id="radiusRange" min="5" max="80" value="30" style="flex: 1; accent-color: var(--primary);" oninput="updateHeatmapParams()">
+            <span id="radiusValue" style="font-family: 'SF Mono', monospace; min-width: 24px;">30</span>
+          </div>
+          <div style="margin-top: 8px; font-size: 13px; color: var(--text-sub); display: flex; align-items: center; gap: 8px;">
+            <span data-i18n="contrast_label">对比度:</span>
+            <input type="range" id="contrastRange" min="0.5" max="3" step="0.1" value="1" style="flex: 1; accent-color: var(--primary);" oninput="updateHeatmapParams()">
+            <span id="contrastValue" style="font-family: 'SF Mono', monospace; min-width: 24px;">1.0</span>
+          </div>
+          <button class="back-btn" onclick="hideMap()" data-i18n="btn_back">← Back to List</button>
+        </div>
 
     <div id="context-menu" class="glass">
       <div class="menu-item" onclick="jumpToWplace()">
@@ -944,7 +959,10 @@
         btn_search: "搜索",
         btn_reset: "重置",
         btn_home: "回到主页",
+        btn_whole_map: "🌐 查看全区域热力图",
         btn_back: "← 返回列表",
+        radius_label: "热力半径:",
+        contrast_label: "对比度:",
         col_rank: "排名",
         col_name: "联盟/玩家名称",
         col_pixels: "像素数",
@@ -956,6 +974,7 @@
         msg_error: "文件格式错误或加载失败",
         msg_no_result: "未找到结果",
         map_stat: "有效区域: {n} • 总像素: {t}",
+        whole_map_title: "全区域总计热力图",
         ctx_jump: "跳转至 Wplace 地图",
         entry_error: "未找到该条记录",
         type_alliances: "🛡️ 联盟",
@@ -986,7 +1005,10 @@
         btn_search: "Search",
         btn_reset: "Reset",
         btn_home: "Back to Home",
+        btn_whole_map: "🌐 View Whole Map",
         btn_back: "← Back to List",
+        radius_label: "Radius:",
+        contrast_label: "Contrast:",
         col_rank: "Rank",
         col_name: "Alliance/Player Name",
         col_pixels: "Pixels",
@@ -1018,9 +1040,11 @@
     };
 
     let currentLang = navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
-    let fullData = [];
+        let fullData = [];
     let mapInstance = null;
     let heatLayer = null;
+    let currentHeatData = [];
+    let currentMaxP = 0;
     let contextMenuLoc = { lat: 0, lng: 0 };
 
     function t(key, params = {}) {
@@ -1469,6 +1493,7 @@
       document.getElementById('controls').style.display = 'flex';
       document.getElementById('listContainer').style.display = 'block';
       document.getElementById('homeBtn').style.display = 'block';
+      document.getElementById('wholeMapBtn').style.display = 'block';
       renderList(fullData.slice(0, 100));
     }
 
@@ -1524,10 +1549,35 @@
       return str.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', '\'': '&#39;' })[c]);
     }
 
-    // 地图相关逻辑
+        // 地图相关逻辑
     function showMap(id) {
       const item = fullData.find(i => i.id === id);
       if (!item) return;
+      renderHeatmapData(item.places, item.name, item.pixels);
+    }
+
+    function showWholeMap() {
+      // 计算所有区块的总像素
+      const placeTotals = {};
+      let totalPixelsAll = 0;
+
+      for (const item of fullData) {
+        if (item.places) {
+          for (const [ridStr, px] of Object.entries(item.places)) {
+            const val = Number(px) || 0;
+            if (!placeTotals[ridStr]) {
+              placeTotals[ridStr] = 0;
+            }
+            placeTotals[ridStr] += val;
+            totalPixelsAll += val;
+          }
+        }
+      }
+
+      renderHeatmapData(placeTotals, t('whole_map_title'), totalPixelsAll);
+    }
+
+    function renderHeatmapData(placesObj, titleText, totalPixels) {
       document.body.style.overflow = 'hidden';
       const mapView = document.getElementById('map-view');
       mapView.classList.add('active');
@@ -1551,32 +1601,42 @@
 
       setTimeout(() => mapInstance.invalidateSize(), 300);
 
-      if (heatLayer) mapInstance.removeLayer(heatLayer);
+            if (heatLayer) mapInstance.removeLayer(heatLayer);
 
-      const heatData = [];
-      let maxP = 0;
+      currentHeatData = [];
+      currentMaxP = 0;
       let regionCount = 0;
-      for (const px of Object.values(item.places)) if (px > maxP) maxP = px;
-      for (const [ridStr, px] of Object.entries(item.places)) {
+      for (const px of Object.values(placesObj)) if (px > currentMaxP) currentMaxP = px;
+      for (const [ridStr, px] of Object.entries(placesObj)) {
         const rid = Number(ridStr);
         const coords = regionIdToLatLng(rid);
         const intensity = Math.log(px + 1) * 100;
-        heatData.push([coords.lat, coords.lng, intensity]);
+        currentHeatData.push([coords.lat, coords.lng, intensity]);
         regionCount++;
       }
 
-      if (heatData.length > 0) {
-        heatLayer = L.heatLayer(heatData, {
+            // 重置拖动条到默认值 30
+      const radiusRange = document.getElementById('radiusRange');
+      const radiusValue = document.getElementById('radiusValue');
+      const contrastRange = document.getElementById('contrastRange');
+      const contrastValue = document.getElementById('contrastValue');
+      if (radiusRange) radiusRange.value = 30;
+      if (radiusValue) radiusValue.textContent = '30';
+      if (contrastRange) contrastRange.value = 1;
+      if (contrastValue) contrastValue.textContent = '1.0';
+
+      if (currentHeatData.length > 0) {
+        heatLayer = L.heatLayer(currentHeatData, {
           radius: 30, blur: 20, maxZoom: 5, minOpacity: 0.3,
           gradient: { 0.2: '#007AFF', 0.5: '#5AC8FA', 0.8: '#FFD60A', 1.0: '#FF3B30' },
-          max: Math.log(maxP + 1) * 100
+          max: Math.log(currentMaxP + 1) * 100
         }).addTo(mapInstance);
 
         const interactiveLayer = L.layerGroup().addTo(mapInstance);
         if (window.currentInteractiveLayer) mapInstance.removeLayer(window.currentInteractiveLayer);
         window.currentInteractiveLayer = interactiveLayer;
 
-        for (const [ridStr, px] of Object.entries(item.places)) {
+        for (const [ridStr, px] of Object.entries(placesObj)) {
           const rid = Number(ridStr);
           const coords = regionIdToLatLng(rid);
           L.circleMarker([coords.lat, coords.lng], {
@@ -1586,12 +1646,36 @@
             .bindPopup(`<strong>${t('col_pixels')}:</strong> ${px.toLocaleString()}`);
         }
 
-        const bounds = L.latLngBounds(heatData.map(p => [p[0], p[1]]));
+                const bounds = L.latLngBounds(currentHeatData.map(p => [p[0], p[1]]));
         mapInstance.fitBounds(bounds, { padding: [100, 100] });
       }
 
-      document.getElementById('mapTitle').innerText = item.name;
-      document.getElementById('mapStats').innerText = t('map_stat', { n: regionCount, t: item.pixels.toLocaleString() });
+      document.getElementById('mapTitle').innerText = titleText;
+      document.getElementById('mapStats').innerText = t('map_stat', { n: regionCount, t: totalPixels.toLocaleString() });
+    }
+
+        function updateHeatmapParams() {
+      const radius = Number(document.getElementById('radiusRange').value);
+      const contrast = Number(document.getElementById('contrastRange').value);
+
+      document.getElementById('radiusValue').textContent = radius;
+      document.getElementById('contrastValue').textContent = contrast.toFixed(1);
+
+      if (mapInstance && currentHeatData.length > 0) {
+        if (heatLayer) mapInstance.removeLayer(heatLayer);
+
+        const baseMax = Math.log(currentMaxP + 1) * 100;
+        const adjustedMax = baseMax / contrast;
+
+        heatLayer = L.heatLayer(currentHeatData, {
+          radius: radius,
+          blur: 20,
+          maxZoom: 5,
+          minOpacity: 0.3,
+          gradient: { 0.2: '#007AFF', 0.5: '#5AC8FA', 0.8: '#FFD60A', 1.0: '#FF3B30' },
+          max: adjustedMax > 0 ? adjustedMax : 1
+        }).addTo(mapInstance);
+      }
     }
 
     function hideMap() {
@@ -1600,7 +1684,7 @@
       document.getElementById('context-menu').style.display = 'none';
     }
 
-    function goHome() {
+        function goHome() {
       // 重置数据
       fullData = [];
 
@@ -1613,6 +1697,7 @@
       document.getElementById('controls').style.display = 'none';
       document.getElementById('listContainer').style.display = 'none';
       document.getElementById('homeBtn').style.display = 'none';
+      document.getElementById('wholeMapBtn').style.display = 'none';
 
       // 显示上传和查询区
       document.getElementById('dropZone').style.display = 'block';
