@@ -827,6 +827,16 @@
           <div class="map-title" id="mapTitle">Loading...</div>
           <div class="map-stat" id="mapStats">Points: 0</div>
           <div style="margin-top: 10px; font-size: 13px; color: var(--text-sub); display: flex; align-items: center; gap: 8px;">
+            <span data-i18n="layer_label">底图选择:</span>
+            <select id="tileLayerSelect" onchange="switchTileLayer()" style="flex: 1; padding: 4px 8px; border-radius: 8px; border: 1px solid rgba(0,0,0,0.1); background: white; font-size: 13px;">
+              <option value="cartoLight">CARTO Light (浅色)</option>
+              <option value="amapVec">高德矢量图 (含道路POI)</option>
+              <option value="amapSat">高德影像底图 (无字卫星)</option>
+              <option value="cartoDark">CARTO Dark (深色)</option>
+              <option value="esriSat">Esri World Imagery (全球影像)</option>
+            </select>
+          </div>
+          <div style="margin-top: 10px; font-size: 13px; color: var(--text-sub); display: flex; align-items: center; gap: 8px;">
             <span data-i18n="radius_label">热力半径:</span>
             <input type="range" id="radiusRange" min="5" max="80" value="30" style="flex: 1; accent-color: var(--primary);" oninput="updateHeatmapParams()">
             <span id="radiusValue" style="font-family: 'SF Mono', monospace; min-width: 24px;">30</span>
@@ -944,6 +954,44 @@
       });
     }
 
+    // 坐标系转换：WGS84 转 GCJ-02 (火星坐标系)
+    function wgs84ToGcj02(lng, lat) {
+      if (outOfChina(lng, lat)) {
+        return [lng, lat];
+      }
+      let dLat = transformLat(lng - 105.0, lat - 35.0);
+      let dLng = transformLng(lng - 105.0, lat - 35.0);
+      let radLat = lat / 180.0 * Math.PI;
+      let magic = Math.sin(radLat);
+      magic = 1 - 0.006693421622965943 * magic * magic;
+      let sqrtMagic = Math.sqrt(magic);
+      dLat = (dLat * 180.0) / ((6378245.0 * (1 - 0.006693421622965943)) / (magic * sqrtMagic) * Math.PI);
+      let mglat = lat + dLat;
+      dLng = (dLng * 180.0) / (6378245.0 / sqrtMagic * Math.cos(radLat) * Math.PI);
+      let mgng = lng + dLng;
+      return [mgng, mglat];
+    }
+
+    function outOfChina(lng, lat) {
+      return (lng < 72.004 || lng > 137.8347) || (lat < 0.8293 || lat > 55.8271);
+    }
+
+    function transformLat(lng, lat) {
+      let ret = -100.0 + 2.0 * lng + 3.0 * lat + 0.2 * lat * lat + 0.1 * lng * lat + 0.2 * Math.sqrt(Math.abs(lng));
+      ret += (20.0 * Math.sin(6.0 * lng * Math.PI) + 20.0 * Math.sin(2.0 * lng * Math.PI)) * 2.0 / 3.0;
+      ret += (20.0 * Math.sin(lat * Math.PI) + 40.0 * Math.sin(lat / 3.0 * Math.PI)) * 2.0 / 3.0;
+      ret += (160.0 * Math.sin(lat / 12.0 * Math.PI) + 320 * Math.sin(lat * Math.PI / 30.0)) * 2.0 / 3.0;
+      return ret;
+    }
+
+    function transformLng(lng, lat) {
+      let ret = 300.0 + lng + 2.0 * lat + 0.1 * lng * lng + 0.1 * lng * lat + 0.1 * Math.sqrt(Math.abs(lng));
+      ret += (20.0 * Math.sin(6.0 * lng * Math.PI) + 20.0 * Math.sin(2.0 * lng * Math.PI)) * 2.0 / 3.0;
+      ret += (20.0 * Math.sin(lng * Math.PI) + 40.0 * Math.sin(lng / 3.0 * Math.PI)) * 2.0 / 3.0;
+      ret += (150.0 * Math.sin(lng / 12.0 * Math.PI) + 300.0 * Math.sin(lng / 30.0 * Math.PI)) * 2.0 / 3.0;
+      return ret;
+    }
+
     // 多语言配置
     const resources = {
       zh: {
@@ -961,6 +1009,7 @@
         btn_home: "回到主页",
         btn_whole_map: "🌐 查看全区域热力图",
         btn_back: "← 返回列表",
+        layer_label: "底图选择:",
         radius_label: "热力半径:",
         contrast_label: "对比度:",
         col_rank: "排名",
@@ -1007,6 +1056,7 @@
         btn_home: "Back to Home",
         btn_whole_map: "🌐 View Whole Map",
         btn_back: "← Back to List",
+        layer_label: "Map API:",
         radius_label: "Radius:",
         contrast_label: "Contrast:",
         col_rank: "Rank",
@@ -1040,10 +1090,12 @@
     };
 
     let currentLang = navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
-        let fullData = [];
+    let fullData = [];
     let mapInstance = null;
     let heatLayer = null;
+    let currentTileLayer = null;
     let currentHeatData = [];
+    let currentRawPlaces = null;
     let currentMaxP = 0;
     let contextMenuLoc = { lat: 0, lng: 0 };
 
@@ -1577,15 +1629,18 @@
       renderHeatmapData(placeTotals, t('whole_map_title'), totalPixelsAll);
     }
 
-    function renderHeatmapData(placesObj, titleText, totalPixels) {
+        function renderHeatmapData(placesObj, titleText, totalPixels) {
+      currentRawPlaces = placesObj;
       document.body.style.overflow = 'hidden';
       const mapView = document.getElementById('map-view');
       mapView.classList.add('active');
 
       if (!mapInstance) {
         mapInstance = L.map('map', { zoomControl: false, attributionControl: false }).setView([35, 105], 4);
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-          subdomains: 'abcd', maxZoom: 19
+        
+        // 默认加载 CARTO Light
+        currentTileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+          subdomains: 'abcd', maxZoom: 20, attribution: '&copy; CARTO'
         }).addTo(mapInstance);
 
         mapInstance.on('contextmenu', e => {
@@ -1601,57 +1656,106 @@
 
       setTimeout(() => mapInstance.invalidateSize(), 300);
 
-            if (heatLayer) mapInstance.removeLayer(heatLayer);
+      // 重新生成当前图层数据
+      rebuildHeatmapDataset();
+
+      document.getElementById('mapTitle').innerText = titleText;
+      let regionCount = currentRawPlaces ? Object.keys(currentRawPlaces).length : 0;
+      document.getElementById('mapStats').innerText = t('map_stat', { n: regionCount, t: totalPixels.toLocaleString() });
+    }
+
+    function switchTileLayer() {
+      const selectVal = document.getElementById('tileLayerSelect').value;
+      if (!mapInstance) return;
+
+      if (currentTileLayer) {
+        mapInstance.removeLayer(currentTileLayer);
+      }
+
+      if (selectVal === 'cartoLight') {
+        currentTileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+          subdomains: 'abcd', maxZoom: 20, attribution: '&copy; CARTO'
+        });
+      } else if (selectVal === 'cartoDark') {
+        currentTileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+          subdomains: 'abcd', maxZoom: 20, attribution: '&copy; CARTO'
+        });
+      } else if (selectVal === 'esriSat') {
+        currentTileLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+          maxZoom: 18, attribution: '&copy; Esri World Imagery'
+        });
+      } else if (selectVal === 'amapVec') {
+        currentTileLayer = L.tileLayer('https://wprd0{s}.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7', {
+          subdomains: '1234', maxZoom: 18, attribution: '&copy; 高德地图'
+        });
+      } else if (selectVal === 'amapSat') {
+        currentTileLayer = L.tileLayer('https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}', {
+          subdomains: '1234', maxZoom: 18, attribution: '&copy; 高德地图'
+        });
+      }
+
+      currentTileLayer.addTo(mapInstance);
+
+      // 重新生成热力图数据（国内源转换坐标系，海外源使用标准WGS84）
+      rebuildHeatmapDataset();
+    }
+
+    function rebuildHeatmapDataset() {
+      if (!currentRawPlaces) return;
+      const selectVal = document.getElementById('tileLayerSelect').value;
+      const needTransform = selectVal.startsWith('amap');
+
+      if (heatLayer) mapInstance.removeLayer(heatLayer);
+      if (window.currentInteractiveLayer) mapInstance.removeLayer(window.currentInteractiveLayer);
 
       currentHeatData = [];
       currentMaxP = 0;
-      let regionCount = 0;
-      for (const px of Object.values(placesObj)) if (px > currentMaxP) currentMaxP = px;
-      for (const [ridStr, px] of Object.entries(placesObj)) {
+      for (const px of Object.values(currentRawPlaces)) if (px > currentMaxP) currentMaxP = px;
+
+      const interactiveLayer = L.layerGroup().addTo(mapInstance);
+      window.currentInteractiveLayer = interactiveLayer;
+
+      for (const [ridStr, px] of Object.entries(currentRawPlaces)) {
         const rid = Number(ridStr);
         const coords = regionIdToLatLng(rid);
+        
+        let lat = coords.lat;
+        let lng = coords.lng;
+
+        if (needTransform) {
+          const gcj = wgs84ToGcj02(lng, lat);
+          lng = gcj[0];
+          lat = gcj[1];
+        }
+
         const intensity = Math.log(px + 1) * 100;
-        currentHeatData.push([coords.lat, coords.lng, intensity]);
-        regionCount++;
+        currentHeatData.push([lat, lng, intensity]);
+
+        L.circleMarker([lat, lng], {
+          radius: 15, stroke: false, fillColor: 'transparent', fillOpacity: 0
+        })
+          .addTo(interactiveLayer)
+          .bindPopup(`<strong>${t('col_pixels')}:</strong> ${px.toLocaleString()}`);
       }
 
-            // 重置拖动条到默认值 30
       const radiusRange = document.getElementById('radiusRange');
-      const radiusValue = document.getElementById('radiusValue');
       const contrastRange = document.getElementById('contrastRange');
-      const contrastValue = document.getElementById('contrastValue');
-      if (radiusRange) radiusRange.value = 30;
-      if (radiusValue) radiusValue.textContent = '30';
-      if (contrastRange) contrastRange.value = 1;
-      if (contrastValue) contrastValue.textContent = '1.0';
+
+      const radius = Number(radiusRange ? radiusRange.value : 30);
+      const contrast = Number(contrastRange ? contrastRange.value : 1);
+      const baseMax = Math.log(currentMaxP + 1) * 100;
+      const adjustedMax = baseMax / contrast;
 
       if (currentHeatData.length > 0) {
         heatLayer = L.heatLayer(currentHeatData, {
-          radius: 30, blur: 20, maxZoom: 5, minOpacity: 0.3,
+          radius: radius, blur: 20, maxZoom: 5, minOpacity: 0.3,
           gradient: { 0.2: '#007AFF', 0.5: '#5AC8FA', 0.8: '#FFD60A', 1.0: '#FF3B30' },
-          max: Math.log(currentMaxP + 1) * 100
+          max: adjustedMax > 0 ? adjustedMax : 1
         }).addTo(mapInstance);
 
-        const interactiveLayer = L.layerGroup().addTo(mapInstance);
-        if (window.currentInteractiveLayer) mapInstance.removeLayer(window.currentInteractiveLayer);
-        window.currentInteractiveLayer = interactiveLayer;
-
-        for (const [ridStr, px] of Object.entries(placesObj)) {
-          const rid = Number(ridStr);
-          const coords = regionIdToLatLng(rid);
-          L.circleMarker([coords.lat, coords.lng], {
-            radius: 15, stroke: false, fillColor: 'transparent', fillOpacity: 0
-          })
-            .addTo(interactiveLayer)
-            .bindPopup(`<strong>${t('col_pixels')}:</strong> ${px.toLocaleString()}`);
-        }
-
-                const bounds = L.latLngBounds(currentHeatData.map(p => [p[0], p[1]]));
+        const bounds = L.latLngBounds(currentHeatData.map(p => [p[0], p[1]]));
         mapInstance.fitBounds(bounds, { padding: [100, 100] });
       }
-
-      document.getElementById('mapTitle').innerText = titleText;
-      document.getElementById('mapStats').innerText = t('map_stat', { n: regionCount, t: totalPixels.toLocaleString() });
     }
 
         function updateHeatmapParams() {
