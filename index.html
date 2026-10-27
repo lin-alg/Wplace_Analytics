@@ -1638,9 +1638,9 @@
       if (!mapInstance) {
         mapInstance = L.map('map', { zoomControl: false, attributionControl: false }).setView([35, 105], 4);
         
-        // 默认加载 CARTO Light
-        currentTileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-          subdomains: 'abcd', maxZoom: 20, attribution: '&copy; CARTO'
+        // 默认加载 高德矢量地图
+        currentTileLayer = L.tileLayer('https://wprd0{s}.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7', {
+          subdomains: '1234', maxZoom: 18, attribution: '&copy; 高德地图'
         }).addTo(mapInstance);
 
         mapInstance.on('contextmenu', e => {
